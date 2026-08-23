@@ -289,21 +289,13 @@ class Daren485(Battery):
                 self.cell_count = realtime_cell_count
 
             if realtime_cell_count != self.cell_count:
-                raise ValueError(
-                    "Service 42 cell count ({}) differs from configured cell count ({})".format(
-                        realtime_cell_count, self.cell_count
-                    )
-                )
+                raise ValueError("Service 42 cell count ({}) differs from configured cell count ({})".format(realtime_cell_count, self.cell_count))
 
             if len(self.cells) == 0:
                 for _ in range(self.cell_count):
                     self.cells.append(Cell(False))
             elif len(self.cells) != self.cell_count:
-                raise ValueError(
-                    "cell array length ({}) differs from configured cell count ({})".format(
-                        len(self.cells), self.cell_count
-                    )
-                )
+                raise ValueError("cell array length ({}) differs from configured cell count ({})".format(len(self.cells), self.cell_count))
 
             for i in range(realtime_cell_count):
                 self.cells[i].voltage = read_u16("cell_voltage_{}".format(i + 1)) / 1000
