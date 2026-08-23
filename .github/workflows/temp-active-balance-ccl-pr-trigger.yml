@@ -1,0 +1,67 @@
+name: Temporary active balance CCL PR trigger
+
+on:
+  pull_request:
+    branches:
+      - active_balance
+    types: [opened]
+
+permissions:
+  contents: write
+
+jobs:
+  run-one-shot-builder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: active_balance
+          fetch-depth: 0
+
+      - name: Execute one-shot builder steps
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = Path('.github/workflows/temp-active-balance-ccl-builder.yml')
+          lines = path.read_text().splitlines()
+          blocks = []
+          i = 0
+          while i < len(lines):
+              if lines[i].startswith('        run: |'):
+                  i += 1
+                  block = []
+                  while i < len(lines):
+                      line = lines[i]
+                      if line.startswith('      - name:'):
+                          break
+                      if line.startswith('          '):
+                          block.append(line[10:])
+                      elif line.strip() == '':
+                          block.append('')
+                      else:
+                          break
+                      i += 1
+                  blocks.append('\n'.join(block))
+                  continue
+              i += 1
+
+          if len(blocks) != 4:
+              raise SystemExit('expected four one-shot run blocks, found {}'.format(len(blocks)))
+
+          for index, block in enumerate(blocks, 1):
+              print('Executing one-shot block {}'.format(index), flush=True)
+              subprocess.run(['bash', '-euo', 'pipefail', '-c', block], check=True)
+          PY
+
+      - name: Remove temporary PR trigger
+        shell: bash
+        run: |
+          git pull --ff-only origin active_balance
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/temp-active-balance-ccl-pr-trigger.yml
+          git commit -m "Remove temporary active balance CCL trigger"
+          git push origin HEAD:active_balance
