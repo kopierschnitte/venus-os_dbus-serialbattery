@@ -18,7 +18,7 @@ jobs:
           ref: active_balance
           fetch-depth: 0
 
-      - name: Extract embedded patches and apply active balancing drivers
+      - name: Apply active balancing drivers
         shell: bash
         run: |
           python - <<'PY'
@@ -34,10 +34,61 @@ jobs:
           pathlib.Path('/tmp/daren.patch').write_bytes(a[len(b'###DAREN###\n'):])
           pathlib.Path('/tmp/ks.patch').write_bytes(b)
           PY
+
           cd dbus-serialbattery/bms
-          patch -p3 < /tmp/daren.patch
+
+          # Daren master contains a newer defensive temperature-count parser than
+          # the local base used to generate the validated v28 patch. Preserve it
+          # and apply the one rejected active-balance change explicitly below.
+          patch -p3 --reject-file=/tmp/daren.rej < /tmp/daren.patch || true
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('daren_485.py')
+          s = p.read_text()
+          old = '''            temperature_count = read_u8("temperature_count")
+            if temperature_count > 32:
+                raise ValueError("invalid temperature sensor count {}".format(temperature_count))
+
+            for i in range(temperature_count):
+                temperature = read_i16("temperature_{}".format(i + 1)) / 10
+                # Battery exposes four generic battery temperature slots. Consume any
+                # additional sensors to keep the payload aligned, but publish only 1..4.
+                if i < 4:
+                    self.to_temperature(i + 1, temperature)
+'''
+          new = '''            temperature_count = read_u8("temperature_count")
+            if temperature_count > 32:
+                raise ValueError("invalid temperature sensor count {}".format(temperature_count))
+
+            temperature_sensors = []
+            for i in range(temperature_count):
+                temperature = read_i16("temperature_{}".format(i + 1)) / 10
+                temperature_sensors.append(temperature)
+                # Battery exposes four generic battery temperature slots. Consume any
+                # additional sensors to keep the payload aligned, but publish only 1..4.
+                if i < 4:
+                    self.to_temperature(i + 1, temperature)
+
+            # Keep all raw Service 0x42 temperatures available for the managed
+            # balancer supervisor while preserving master's safe 4-slot publishing.
+            self._last_temperature_ambient = temperature_ambient
+            self._last_temperature_pack = temperature_pack
+            self._last_temperature_mos = temperature_mos
+            self._last_temperature_sensors = temperature_sensors
+'''
+          if old not in s:
+              raise SystemExit('Daren temperature parser anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm -f daren_485.py.rej /tmp/daren.rej
+
           patch -p3 < /tmp/ks.patch
+
           python -m py_compile daren_485.py ks48100.py
+          grep -q 'BALANCER_SUPERVISOR_DELTA_START = 0.020' daren_485.py
+          grep -q 'BALANCER_SUPERVISOR_DELTA_START = 0.020' ks48100.py
+          grep -q 'SUPERVISOR v28 DELTA MODE' daren_485.py
+          grep -q 'SUPERVISOR v6 DELTA MODE' ks48100.py
 
       - name: Commit current active balancing drivers
         shell: bash
