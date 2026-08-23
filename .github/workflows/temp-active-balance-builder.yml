@@ -1,0 +1,100 @@
+name: Temporary active balance builder
+
+on:
+  pull_request:
+    branches:
+      - active_balance
+    types: [opened]
+
+permissions:
+  contents: write
+
+jobs:
+  build-active-balance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: active_balance
+          fetch-depth: 0
+
+      - name: Apply active balancing drivers
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, gzip, pathlib, re
+          text = pathlib.Path('.github/workflows/active-balance-builder.yml').read_text()
+          block = text.split('payload = (', 1)[1].split('\n          )', 1)[0]
+          chunks = re.findall(r'^\s*"([A-Za-z0-9+/=]+)"\s*$', block, re.M)
+          if not chunks:
+              raise SystemExit('embedded patch payload not found')
+          raw = gzip.decompress(base64.b64decode(''.join(chunks)))
+          a, b = raw.split(b'\n###KS###\n', 1)
+          assert a.startswith(b'###DAREN###\n')
+          pathlib.Path('/tmp/daren.patch').write_bytes(a[len(b'###DAREN###\n'):])
+          pathlib.Path('/tmp/ks.patch').write_bytes(b)
+          PY
+
+          cd dbus-serialbattery/bms
+          patch -p3 --reject-file=/tmp/daren.rej < /tmp/daren.patch || true
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('daren_485.py')
+          s = p.read_text()
+          old = '''            temperature_count = read_u8("temperature_count")
+            if temperature_count > 32:
+                raise ValueError("invalid temperature sensor count {}".format(temperature_count))
+
+            for i in range(temperature_count):
+                temperature = read_i16("temperature_{}".format(i + 1)) / 10
+                # Battery exposes four generic battery temperature slots. Consume any
+                # additional sensors to keep the payload aligned, but publish only 1..4.
+                if i < 4:
+                    self.to_temperature(i + 1, temperature)
+'''
+          new = '''            temperature_count = read_u8("temperature_count")
+            if temperature_count > 32:
+                raise ValueError("invalid temperature sensor count {}".format(temperature_count))
+
+            temperature_sensors = []
+            for i in range(temperature_count):
+                temperature = read_i16("temperature_{}".format(i + 1)) / 10
+                temperature_sensors.append(temperature)
+                # Battery exposes four generic battery temperature slots. Consume any
+                # additional sensors to keep the payload aligned, but publish only 1..4.
+                if i < 4:
+                    self.to_temperature(i + 1, temperature)
+
+            self._last_temperature_ambient = temperature_ambient
+            self._last_temperature_pack = temperature_pack
+            self._last_temperature_mos = temperature_mos
+            self._last_temperature_sensors = temperature_sensors
+'''
+          if old not in s:
+              raise SystemExit('Daren temperature parser anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm -f daren_485.py.rej /tmp/daren.rej
+
+          patch -p3 < /tmp/ks.patch
+          python -m py_compile daren_485.py ks48100.py
+          grep -q 'BALANCER_SUPERVISOR_DELTA_START = 0.020' daren_485.py
+          grep -q 'BALANCER_SUPERVISOR_DELTA_START = 0.020' ks48100.py
+          grep -q 'SUPERVISOR v28 DELTA MODE' daren_485.py
+          grep -q 'SUPERVISOR v6 DELTA MODE' ks48100.py
+
+      - name: Commit drivers to active_balance
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dbus-serialbattery/bms/daren_485.py dbus-serialbattery/bms/ks48100.py
+          git commit -m "Add aggressive active balancing for Daren and KS48100"
+          git push origin HEAD:active_balance
+
+      - name: Remove obsolete branches
+        shell: bash
+        run: |
+          for branch in daren-ks-parallel-balancing-v27-v5 patch-1 active_balance_tmp_upload_test trigger-active-balance trigger-active-balance-v2 trigger-active-balance-v3; do
+            git push origin --delete "$branch" || true
+          done
