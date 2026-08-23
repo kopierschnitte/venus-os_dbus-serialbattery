@@ -198,15 +198,7 @@ def test_ks_low_battery_warning_is_not_internal_failure(monkeypatch):
 
 def test_ks_get_cap_params_uses_framework_capacity_remain(monkeypatch):
     bms = _make_ks()
-    payload = (
-        _u16(7550)
-        + _u16(10000)
-        + _u16(10000)
-        + "00000064"
-        + "00000032"
-        + _u16(1234)
-        + _u16(567)
-    )
+    payload = _u16(7550) + _u16(10000) + _u16(10000) + "00000064" + "00000032" + _u16(1234) + _u16(567)
     response = ("0" * 25) + payload + ("0" * 5)
     monkeypatch.setattr(bms, "read_response", lambda _ser: response)
 
